@@ -1,0 +1,125 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function owns(userId) {
+      return signedIn() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return signedIn() && request.auth.token.admin == true;
+    }
+
+    function validFoodSubmission() {
+      let data = request.resource.data;
+      return data.keys().hasAll([
+          'name', 'category', 'servingAmount', 'servingUnit', 'servingLabel',
+          'servings', 'calories', 'protein', 'fat', 'carbs', 'ingredients',
+          'source', 'status', 'rejectionReason', 'createdBy', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'name', 'category', 'servingAmount', 'servingUnit', 'servingLabel',
+          'servings', 'calories', 'protein', 'fat', 'carbs', 'ingredients', 'replacesFoodId',
+          'nutritionSource', 'nutritionNote', 'source', 'status', 'rejectionReason',
+          'createdBy', 'createdAt', 'updatedAt'
+        ])
+        && data.name is string
+        && data.name.size() >= 2
+        && data.name.size() <= 80
+        && data.category in ['makanan_utama', 'lauk', 'camilan', 'minuman']
+        && data.servingAmount is number
+        && data.servingAmount == 1
+        && data.servingUnit == 'porsi'
+        && data.servings is number
+        && data.servings > 0
+        && data.servings <= 100
+        && data.calories is number
+        && data.calories >= 0
+        && data.protein is number
+        && data.protein >= 0
+        && data.fat is number
+        && data.fat >= 0
+        && data.carbs is number
+        && data.carbs >= 0
+        && data.ingredients is list
+        && data.ingredients.size() > 0
+        && data.ingredients.size() <= 20
+        && data.source == 'user-submission'
+        && data.status == 'pending'
+        && data.rejectionReason is string
+        && data.rejectionReason.size() <= 300
+        && (!('nutritionSource' in data) ||
+          (data.nutritionSource is string && data.nutritionSource.size() <= 100))
+        && (!('nutritionNote' in data) ||
+          (data.nutritionNote is string && data.nutritionNote.size() <= 500))
+        && data.createdBy == request.auth.uid
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp
+        && (!('replacesFoodId' in data) ||
+          (data.replacesFoodId is string
+            && exists(/databases/$(database)/documents/makanan_tkpi/$(data.replacesFoodId))
+            && get(/databases/$(database)/documents/makanan_tkpi/$(data.replacesFoodId)).data.createdBy == request.auth.uid));
+    }
+
+    match /users/{userId} {
+      allow read: if owns(userId) || isAdmin();
+      allow create, update: if owns(userId);
+      allow delete: if false;
+
+      match /meal_logs/{mealId} {
+        allow read: if owns(userId) || isAdmin();
+        allow create, update, delete: if owns(userId);
+      }
+    }
+
+    match /makanan_tkpi/{foodId} {
+      allow read: if signedIn();
+      allow create, update: if isAdmin()
+        && request.resource.data.name is string
+        && request.resource.data.name.size() >= 2
+        && request.resource.data.name.size() <= 80
+        && request.resource.data.category in ['makanan_utama', 'lauk', 'camilan', 'minuman']
+        && request.resource.data.servingAmount is number
+        && request.resource.data.servingAmount > 0
+        && request.resource.data.servingUnit in ['g', 'ml', 'butir', 'porsi']
+        && request.resource.data.servingLabel is string
+        && request.resource.data.calories is number
+        && request.resource.data.calories >= 0
+        && request.resource.data.protein is number
+        && request.resource.data.protein >= 0
+        && request.resource.data.fat is number
+        && request.resource.data.fat >= 0
+        && request.resource.data.carbs is number
+        && request.resource.data.carbs >= 0;
+      allow delete: if false;
+    }
+
+    match /food_submissions/{submissionId} {
+      allow get, list: if isAdmin()
+        || (signedIn() && resource.data.createdBy == request.auth.uid);
+
+      allow create: if signedIn() && validFoodSubmission();
+
+      allow update: if (signedIn()
+        && resource.data.createdBy == request.auth.uid
+        && resource.data.status in ['pending', 'rejected']
+        && request.resource.data.createdBy == request.auth.uid
+        && validFoodSubmission())
+        || (isAdmin()
+          && resource.data.status == 'pending'
+          && request.resource.data.status in ['approved', 'rejected']
+          && request.resource.data.rejectionReason is string
+          && request.resource.data.rejectionReason.size() <= 300
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['status', 'rejectionReason', 'updatedAt']));
+
+      allow delete: if signedIn()
+        && resource.data.createdBy == request.auth.uid
+        && resource.data.status in ['pending', 'rejected'];
+    }
+  }
+}
